@@ -4,6 +4,7 @@ import httpx
 from pydantic import BaseModel, Field
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 # ---------------------------------------------------------------------------
 # Config
@@ -12,7 +13,12 @@ JIRA_URL   = os.environ.get("JIRA_URL", "").rstrip("/")
 JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
 JIRA_TOKEN = os.environ.get("JIRA_TOKEN", "")
 
-mcp = FastMCP("jira_mcp")
+mcp = FastMCP(
+    "jira_mcp",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
