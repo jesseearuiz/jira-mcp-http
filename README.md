@@ -1,1 +1,1 @@
-"# jira-mcp-http" 
+# jira-mcp-http 
