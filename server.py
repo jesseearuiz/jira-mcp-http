@@ -36,6 +36,18 @@ async def jira_get(path: str, params: dict = {}) -> dict:
         return r.json()
 
 
+async def jira_post(path: str, body: dict) -> dict:
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            f"{JIRA_URL}/rest/api/3{path}",
+            auth=(JIRA_EMAIL, JIRA_TOKEN),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            json=body,
+        )
+        r.raise_for_status()
+        return r.json() if r.content else {}
+
+
 def get_text(node) -> str:
     """Extract plain text from Jira's ADF rich text format."""
     if not node: return ""
@@ -46,7 +58,7 @@ def get_text(node) -> str:
 
 def handle_error(e: Exception) -> str:
     if isinstance(e, httpx.HTTPStatusError):
-        return f"Error: Jira API returned {e.response.status_code}. Check your credentials and project key."
+        return f"Error: Jira API returned {e.response.status_code}: {e.response.text}"
     if isinstance(e, httpx.TimeoutException):
         return "Error: Request timed out. Please try again."
     return f"Error: {str(e)}"
@@ -57,6 +69,13 @@ def handle_error(e: Exception) -> str:
 
 class SearchInput(BaseModel):
     search: Optional[str] = Field(default=None, description="Optional text to search for in issue names/descriptions.")
+
+class CommentInput(BaseModel):
+    issue_key: str = Field(..., description="The Jira issue key, e.g. DP-8.")
+    comment: str = Field(..., description="The comment text to post on the issue.")
+
+class StatusInput(BaseModel):
+    issue_key: str = Field(..., description="The Jira issue key, e.g. DP-8.")
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -88,6 +107,75 @@ async def jira_get_issues(params: SearchInput) -> str:
             for i in data.get("issues", [])
         ]
         return json.dumps(issues, indent=2)
+    except Exception as e:
+        return handle_error(e)
+
+
+@mcp.tool(
+    name="jira_add_comment",
+    annotations={"readOnlyHint": False, "destructiveHint": False}
+)
+async def jira_add_comment(params: CommentInput) -> str:
+    """Post a comment on a Jira issue.
+
+    Args:
+        params: CommentInput with issue_key and comment text.
+
+    Returns:
+        Confirmation message with comment ID.
+    """
+    try:
+        # Jira Cloud requires ADF format for comments
+        body = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": params.comment}]
+                    }
+                ]
+            }
+        }
+        result = await jira_post(f"/issue/{params.issue_key}/comment", body)
+        return json.dumps({"success": True, "comment_id": result.get("id"), "issue": params.issue_key})
+    except Exception as e:
+        return handle_error(e)
+
+
+@mcp.tool(
+    name="jira_close_issue",
+    annotations={"readOnlyHint": False, "destructiveHint": False}
+)
+async def jira_close_issue(params: StatusInput) -> str:
+    """Transition a Jira issue to Done status.
+
+    Args:
+        params: StatusInput with the issue_key to close.
+
+    Returns:
+        Confirmation that the issue was moved to Done, or an error.
+    """
+    try:
+        # First get available transitions for this issue
+        data = await jira_get(f"/issue/{params.issue_key}/transitions")
+        transitions = data.get("transitions", [])
+
+        # Find the "Done" transition
+        done = next(
+            (t for t in transitions if t["name"].lower() in ["done", "closed", "resolved"]),
+            None
+        )
+
+        if not done:
+            available = [t["name"] for t in transitions]
+            return json.dumps({"error": f"No 'Done' transition found. Available: {available}"})
+
+        # Apply the transition
+        await jira_post(f"/issue/{params.issue_key}/transitions", {"transition": {"id": done["id"]}})
+        return json.dumps({"success": True, "issue": params.issue_key, "status": "Done"})
+
     except Exception as e:
         return handle_error(e)
 
